@@ -13,6 +13,7 @@
   import ProcessCard from "./ProcessCard.svelte";
   import type { Process } from "./types";
   import FocusCard from "./FocusCard.svelte";
+  import New from "./New.svelte";
 
   let shownew = false;
 
@@ -22,29 +23,11 @@
   export async function refresh() {
     let r = await fetch("/api/list");
     data = await r.json();
+    console.log(data);
   }
-
-  async function spawnproc() {
-    let a = await fetch("/api/new", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        command,
-        uid,
-      }),
-    });
-    console.log(a);
-    refresh();
-  }
-  let showsignals = false;
-  let killsignal: number = 9;
 
   let data: any;
   let selectedprocess: Process;
-  // let selectedtext: string | null;
-  // let a;
 
   onMount(async () => {
     refresh();
@@ -61,22 +44,18 @@
 
   {#if data}
     <div class="grid m-4">
-      {#each data as process}
+      {#each Object.values(data) as process}
         <ProcessCard {process} bind:selectedprocess />
       {/each}
     </div>
   {/if}
-  <Dialog display="a" headline="Spawn New Process" bind:open={shownew}>
-    <TextField name="command" bind:value={command} />
-    <TextField name="as UID" bind:value={uid} />
-
-    <Button type="tonal" on:click={spawnproc}>Spawn</Button>
-  </Dialog>
 
   <!-- <Dialog display="a" headline="Select Signal to send" bind:open={showsignals}>
     <TextField name="signal" bind:value={killsignal} />
     <Button type="tonal" on:click={sendkillsignal}>Kill</Button>
   </Dialog> -->
+
+  <New bind:show={shownew} />
 
   <div id="fab">
     <FAB icon="charm:plus" on:click={() => (shownew = true)} />

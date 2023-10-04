@@ -12,10 +12,10 @@
   <Card type={process === selectedprocess ? "outlined" : "elevated"}>
     <div class="flex flex-col items-start gap-y-5">
       <div class="text-xl">
-        "{process.command}"
-        {process.exited == null
+        "{process.name}"
+        {process.status.Exited == null
           ? "running"
-          : `exited with code ${process.exited}`}
+          : `exited with code ${process.status.Exited}`}
       </div>
 
       <div class="w-full flex justify-end gap-x-3">

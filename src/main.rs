@@ -1,3 +1,5 @@
+mod rwlock;
+
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path};
 use axum::http::{header, Request, StatusCode};
@@ -6,6 +8,7 @@ use axum::routing::{delete, post};
 use axum::{response::IntoResponse, routing::get, Router};
 use axum::{Extension, Json};
 use axum_extra::TypedHeader;
+use rwlock::RwLock;
 use serde::de::Visitor;
 use simple_ringbuf::RingBuffer;
 use std::cell::RefCell;
@@ -20,7 +23,7 @@ use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use timeout_readwrite::TimeoutReader;
 use tokio::fs;
 use tokio::sync::Mutex;
@@ -36,47 +39,6 @@ fn get_id() -> usize {
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
-struct RwLock<T>(tokio::sync::RwLock<T>);
-impl<T> RwLock<T> {
-    fn new(t: T) -> RwLock<T> {
-        Self(tokio::sync::RwLock::new(t))
-    }
-}
-impl<T> Default for RwLock<T>
-where
-    T: Default,
-{
-    fn default() -> Self {
-        Self::new(T::default())
-    }
-}
-impl<T> Serialize for RwLock<T>
-where
-    T: Serialize,
-    T: Clone,
-{
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_newtype_struct("RwLock", &self.0.try_read().unwrap().clone())
-    }
-}
-
-impl<'de, T> Deserialize<'de> for RwLock<T>
-where
-    T: Deserialize<'de>,
-{
-    fn deserialize<D>(deserializer: D) -> Result<RwLock<T>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let a = Deserialize::deserialize(deserializer)?;
-
-        Ok(RwLock(tokio::sync::RwLock::new(a)))
-    }
-}
-
 #[derive(Serialize, Deserialize, Default)]
 struct SavedState {
     processes: Processes,
@@ -85,10 +47,13 @@ struct SavedState {
 
 #[derive(Serialize, Deserialize)]
 struct Process {
+    name: String,
+    dir: String,
     command: String,
     id: usize,
     log: RwLock<VecDeque<u8>>,
     status: RwLock<Status>,
+    timestamp: RwLock<u128>,
     #[serde(skip)]
     pid: AtomicU32,
     autostart: AtomicBool,
@@ -133,7 +98,6 @@ async fn main() {
         proccess: savedstate.processes,
     };
     let app = Router::new()
-        .route("/api/hello", get(hello))
         .route("/api/out", get(websocket))
         .route("/api/new", post(new))
         .route("/api/list", get(list))
@@ -222,26 +186,34 @@ async fn list(
 ) -> impl IntoResponse {
     let processes = state.proccess.0.read().await;
 
-    let mut resp = vec![];
+    // let mut resp = vec![];
 
-    for (i, process) in processes.iter() {
-        resp.push(ListResponse {
-            command: process.command.clone(),
-            id: *i,
-            exited: match process.status.0.read().await.clone() {
-                Status::Exited(status) => Some(status),
-                Status::Running => None,
-            },
-        })
-    }
+    // for (i, process) in processes.iter() {
+    //     resp.push(ListResponse {
+    //         command: process.command.clone(),
+    //         id: *i,
+    //         exited: match process.status.0.read().await.clone() {
+    //             Status::Exited(status) => Some(status),
+    //             Status::Running => None,
+    //         },
+    //     })
+    // }
 
-    Json(resp)
+    Json(processes.clone())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct NewRequest {
     command: String,
     uid: String,
+    name: String,
+    dir: String,
+}
+fn timestamp() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
 }
 async fn new(
     Extension(state): Extension<Arc<GState>>,
@@ -252,11 +224,14 @@ async fn new(
     let id = get_id();
 
     let process = Process {
+        name: payload.name,
+        dir: payload.dir,
         command: payload.command,
         id,
         log: RwLock::new(VecDeque::new()),
         status: RwLock::new(Status::Running),
         pid: AtomicU32::new(0),
+        timestamp: RwLock::new(timestamp()),
         autostart: true.into(),
     };
 
@@ -282,6 +257,7 @@ async fn child_thread(process: Arc<Process>) {
     let fd = s.stdout.as_mut().unwrap().as_raw_fd().clone();
 
     let stdout = unsafe { File::from_raw_fd(fd) };
+    *process.timestamp.0.write().await = timestamp();
 
     // time out so we have a chance to respond to exit
     let mut rdr = TimeoutReader::new(stdout, Duration::new(5, 0));
@@ -306,6 +282,7 @@ async fn child_thread(process: Arc<Process>) {
             Ok(Some(exit)) => {
                 let mut status = process.status.0.write().await;
                 *status = Status::Exited(exit.code().unwrap_or(-1));
+                *process.timestamp.0.write().await = timestamp();
             }
             Ok(None) => (),
             Err(e) => panic!("{}", e),
@@ -321,8 +298,4 @@ async fn save(state: Arc<GState>) {
     };
     let str = serde_json::to_string(&saved).unwrap();
     fs::write("./cfg.json", str).await.unwrap();
-}
-
-async fn hello() -> impl IntoResponse {
-    "hello from server!"
 }
