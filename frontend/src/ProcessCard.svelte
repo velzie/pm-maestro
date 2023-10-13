@@ -3,9 +3,11 @@
   import type { Process } from "./types";
   import Icon from "@iconify/svelte";
   import { deleteProcess, sendkillsignal, startprocess } from "./api";
+  import { createEventDispatcher } from "svelte";
 
   export let process: Process;
   export let selectedprocess: Process | null;
+  let d = createEventDispatcher();
 </script>
 
 <button on:click={() => (selectedprocess = process)}>
@@ -25,6 +27,7 @@
             iconType="full"
             on:click={() => {
               deleteProcess(process.id);
+              d("refresh");
             }}
           >
             <Icon icon="clarity:trash-solid" />
@@ -32,6 +35,7 @@
           <Button
             on:click={() => {
               startprocess(process.id);
+              d("refresh");
             }}
             iconType="full"
             type="elevated"
@@ -42,6 +46,7 @@
           <Button
             on:click={() => {
               sendkillsignal(process.id, 2); // SIGINT
+              d("refresh");
             }}
             iconType="full"
             type="elevated"

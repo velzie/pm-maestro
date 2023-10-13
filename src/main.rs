@@ -4,7 +4,7 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, Path};
 use axum::http::{header, Request, StatusCode};
 use axum::response::Html;
-use axum::routing::{delete, post};
+use axum::routing::{delete, patch, post};
 use axum::{response::IntoResponse, routing::get, Router};
 use axum::{Extension, Json};
 use axum_extra::TypedHeader;
@@ -102,6 +102,7 @@ async fn main() {
         .route("/api/new", post(new))
         .route("/api/list", get(list))
         .route("/api/:id", get(gets))
+        .route("/api/:id", patch(patches))
         .route("/api/:id", delete(deletes))
         .route("/api/:id/kill", post(kill))
         .layer(Extension(Arc::new(state)));
@@ -148,16 +149,19 @@ async fn gets(
     String::from_utf8(Vec::from(log.clone())).unwrap()
 }
 
+async fn killproc(proc: Arc<Process>) {
+    proc.autostart.store(false, Ordering::Relaxed);
+    let pid = proc.pid.load(Ordering::Relaxed);
+    unsafe { libc::kill(pid as i32, 9) };
+}
 async fn kill(
     Extension(state): Extension<Arc<GState>>,
     Path(id): Path<usize>,
 ) -> impl IntoResponse {
     let procs = state.proccess.0.read().await;
     let proc = procs.get(&id).unwrap();
-    proc.autostart.store(false, Ordering::Relaxed);
-    let pid = proc.pid.load(Ordering::Relaxed);
-    unsafe { libc::kill(pid as i32, 9) };
 
+    killproc(proc.clone());
     ""
 }
 
@@ -169,6 +173,23 @@ async fn deletes(
     processes.remove(&id);
 
     ""
+}
+
+async fn patches(
+    Extension(state): Extension<Arc<GState>>,
+
+    Path(id): Path<usize>,
+    Json(payload): Json<NewRequest>, // Extension(callbacks): Extension<Arc<RwLock<Callbacks>>>
+) -> impl IntoResponse {
+    let mut procs = state.proccess.0.write().await;
+
+    let proc = procs.get(&id).unwrap();
+    killproc(proc.clone()).await;
+    procs.remove(&id);
+
+    drop(procs);
+
+    new(Extension(state), Json(payload)).await
 }
 
 #[derive(Debug, Serialize, Deserialize)]

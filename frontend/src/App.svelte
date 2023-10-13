@@ -37,7 +37,7 @@
 <main>
   {#key selectedprocess}
     {#if selectedprocess}
-      <FocusCard process={selectedprocess} />
+      <FocusCard on:refresh={refresh} process={selectedprocess} />
     {/if}
   {/key}
   <!-- <hr/> -->
@@ -45,7 +45,7 @@
   {#if data}
     <div class="grid m-4">
       {#each Object.values(data) as process}
-        <ProcessCard {process} bind:selectedprocess />
+        <ProcessCard on:refresh={refresh} {process} bind:selectedprocess />
       {/each}
     </div>
   {/if}
@@ -55,7 +55,7 @@
     <Button type="tonal" on:click={sendkillsignal}>Kill</Button>
   </Dialog> -->
 
-  <New bind:show={shownew} />
+  <New on:refresh={refresh} bind:show={shownew} />
 
   <div id="fab">
     <FAB icon="charm:plus" on:click={() => (shownew = true)} />

@@ -4,6 +4,7 @@
   import Icon from "@iconify/svelte";
   import { deleteProcess, sendkillsignal, startprocess } from "./api";
   import Terminal from "./Terminal.svelte";
+  import { createEventDispatcher } from "svelte";
 
   export let process: Process;
 
@@ -12,6 +13,24 @@
   let term: any;
 
   let { name, command, uid, dir } = process;
+
+  let d = createEventDispatcher();
+
+  async function save() {
+    await fetch(`/api/${process.id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name,
+        command,
+        dir,
+        uid,
+      }),
+    });
+    d("refresh");
+  }
 
   fetch(`/api/${process.id}`).then(async (r) => {
     termtext = await r.text();
@@ -35,10 +54,9 @@
             <TextField name="command" bind:value={command} />
             <TextField name="In directory" bind:value={dir} />
             <TextField name="as UID" bind:value={uid} />
-            <TextField name="In directory" bind:value={uid} />
 
             <div>
-              <FAB icon="clarity:floppy-solid" />
+              <FAB on:click={save} icon="clarity:floppy-solid" />
             </div>
           </div>
         </div>

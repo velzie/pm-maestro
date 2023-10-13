@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Button, Dialog, TextField } from "m3-svelte";
+  import { createEventDispatcher } from "svelte";
 
   export let show = false;
 
@@ -9,6 +10,7 @@
   let uid = "1000";
   let dir = "/";
 
+  let d = createEventDispatcher();
   async function create() {
     let a = await fetch("/api/new", {
       method: "POST",
@@ -22,6 +24,7 @@
         dir,
       }),
     });
+    d("refresh");
   }
 </script>
 
