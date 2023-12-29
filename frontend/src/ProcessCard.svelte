@@ -21,7 +21,7 @@
       </div>
 
       <div class="w-full flex justify-end gap-x-3">
-        {#if process.exited != null}
+        {#if process.status.Exited != null}
           <Button
             type="elevated"
             iconType="full"

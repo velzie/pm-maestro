@@ -1,1 +1,1 @@
-{"processes":{"4":{"name":"New Process","dir":"/","command":"","id":4,"log":[],"status":"Running","timestamp":1697240627039,"autostart":true},"3":{"name":"New Process","dir":"/","command":"","id":3,"log":[],"status":{"Exited":0},"timestamp":1697240627039,"autostart":true},"2":{"name":"eho","dir":"/","command":"echo 2","id":2,"log":[50,10],"status":{"Exited":0},"timestamp":1697240627039,"autostart":true}},"counter":5}
+{"processes":{"19":{"name":"New Process","dir":"/root","command":"echo 1","id":19,"status":"Running","timestamp":1703797101525,"autostart":true}},"counter":20}

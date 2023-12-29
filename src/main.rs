@@ -27,6 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use timeout_readwrite::TimeoutReader;
 use tokio::fs;
 use tokio::sync::Mutex;
+use tokio::task::yield_now;
 use tower::{ServiceBuilder, ServiceExt};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
@@ -34,6 +35,7 @@ use tower_http::trace::TraceLayer;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use serde::{Deserialize, Deserializer, Serialize};
 
+static FD_TIMEOUT: u32 = 250_000_000;
 static COUNTER: AtomicUsize = AtomicUsize::new(1);
 fn get_id() -> usize {
     COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -51,6 +53,7 @@ struct Process {
     dir: String,
     command: String,
     id: usize,
+    #[serde(skip)]
     log: RwLock<VecDeque<u8>>,
     status: RwLock<Status>,
     timestamp: RwLock<u128>,
@@ -161,7 +164,7 @@ async fn kill(
     let procs = state.proccess.0.read().await;
     let proc = procs.get(&id).unwrap();
 
-    killproc(proc.clone());
+    killproc(proc.clone()).await;
     ""
 }
 
@@ -265,9 +268,14 @@ async fn new(
 }
 async fn child_thread(process: Arc<Process>) {
     let mut s = Command::new("/usr/bin/env")
-        .arg("sh")
+        .arg("script")
+        .arg("-q") // quiet
         .arg("-c")
         .arg(process.command.clone())
+        .arg("/dev/null")
+        .env("SHELL", "/bin/bash") // this is slightly rancid, will fix later
+        .env("TERM", "xterm") // remember on the other end we have an xterm capable emulator
+        .current_dir(process.dir.clone())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -276,19 +284,34 @@ async fn child_thread(process: Arc<Process>) {
     process.pid.store(s.id(), Ordering::Relaxed);
 
     let fd = s.stdout.as_mut().unwrap().as_raw_fd().clone();
+    let fderr = s.stderr.as_mut().unwrap().as_raw_fd().clone();
 
     let stdout = unsafe { File::from_raw_fd(fd) };
+    let stderr = unsafe { File::from_raw_fd(fderr) };
     *process.timestamp.0.write().await = timestamp();
 
     // time out so we have a chance to respond to exit
-    let mut rdr = TimeoutReader::new(stdout, Duration::new(5, 0));
+    let mut rdr = TimeoutReader::new(stdout, Duration::new(0, FD_TIMEOUT));
+    let mut rdrerr = TimeoutReader::new(stderr, Duration::new(0, FD_TIMEOUT));
     loop {
         let mut buf = [0; 1024];
         let bytes = rdr.read(&mut buf).unwrap_or(0);
 
         if bytes > 0 {
             let out = &buf[0..bytes];
-            dbg!(String::from_utf8(out.to_vec()));
+            let mut writer = process.log.0.write().await;
+
+            for c in out.to_vec() {
+                writer.push_back(c);
+                if writer.len() > 4000 {
+                    writer.pop_front();
+                }
+            }
+        }
+
+        let bytes = rdrerr.read(&mut buf).unwrap_or(0);
+        if bytes > 0 {
+            let out = &buf[0..bytes];
             let mut writer = process.log.0.write().await;
 
             for c in out.to_vec() {
@@ -308,6 +331,9 @@ async fn child_thread(process: Arc<Process>) {
             Ok(None) => (),
             Err(e) => panic!("{}", e),
         }
+
+        // we're polling, give some time back to the scheduler
+        yield_now().await;
     }
 }
 async fn save(state: Arc<GState>) {
