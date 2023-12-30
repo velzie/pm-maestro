@@ -8,16 +8,20 @@ use axum::routing::{delete, patch, post};
 use axum::{response::IntoResponse, routing::get, Router};
 use axum::{Extension, Json};
 use axum_extra::TypedHeader;
+use libc::getpwnam;
 use rwlock::RwLock;
 use serde::de::Visitor;
 use simple_ringbuf::RingBuffer;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::ffi::CString;
+use std::fmt;
 use std::fs::File;
 use std::io::Read;
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
@@ -26,7 +30,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use timeout_readwrite::TimeoutReader;
 use tokio::fs;
-use tokio::sync::Mutex;
+use tokio::sync::broadcast::Sender;
+use tokio::sync::{broadcast, Mutex};
 use tokio::task::yield_now;
 use tower::{ServiceBuilder, ServiceExt};
 use tower_http::services::ServeDir;
@@ -47,22 +52,25 @@ struct SavedState {
     counter: usize,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Process {
     name: String,
     dir: String,
     command: String,
     id: usize,
+    user: String,
     #[serde(skip)]
     log: RwLock<VecDeque<u8>>,
     status: RwLock<Status>,
     timestamp: RwLock<u128>,
     #[serde(skip)]
     pid: AtomicU32,
+    #[serde(skip)]
+    tx: Arc<RwLock<Option<Sender<Vec<u8>>>>>,
     autostart: AtomicBool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 enum Status {
     Running,
     Exited(i32),
@@ -92,7 +100,7 @@ async fn main() {
 
     for process in savedstate.processes.0.read().await.values() {
         if process.autostart.load(Ordering::Relaxed) {
-            tokio::spawn(child_thread(process.clone()));
+            spawn_child_thread(process.clone()).await;
         }
     }
 
@@ -100,14 +108,15 @@ async fn main() {
     let state = GState {
         proccess: savedstate.processes,
     };
+
     let app = Router::new()
-        .route("/api/out", get(websocket))
         .route("/api/new", post(new))
         .route("/api/list", get(list))
         .route("/api/:id", get(gets))
         .route("/api/:id", patch(patches))
         .route("/api/:id", delete(deletes))
         .route("/api/:id/kill", post(kill))
+        .route("/api/:id/tail", get(websocket))
         .layer(Extension(Arc::new(state)));
     // .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()));
 
@@ -127,17 +136,26 @@ async fn main() {
     .unwrap();
 }
 
-async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
-    socket.send(Message::Text("sex".into())).await;
+async fn handle_socket(mut socket: WebSocket, who: SocketAddr, process: Arc<Process>) {
+    let tx = process.tx.clone().0.read().await.clone().unwrap();
+    let mut rx = tx.subscribe();
+
+    loop {
+        let text = rx.recv().await.unwrap();
+        socket.send(Message::Binary(text)).await.unwrap();
+    }
 }
 async fn websocket(
+    Extension(state): Extension<Arc<GState>>,
+    Path(id): Path<usize>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
     user_agent: Option<TypedHeader<axum_extra::headers::UserAgent>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
-    // finalize the upgrade process by returning upgrade callback.
-    // we can customize the callback by sending additional info such as address.
-    ws.on_upgrade(move |socket| handle_socket(socket, addr))
+    let processes = state.proccess.0.read().await;
+    let process = processes.get(&id).unwrap().clone();
+
+    ws.on_upgrade(move |socket| handle_socket(socket, addr, process))
 }
 
 async fn gets(
@@ -155,6 +173,10 @@ async fn gets(
 async fn killproc(proc: Arc<Process>) {
     proc.autostart.store(false, Ordering::Relaxed);
     let pid = proc.pid.load(Ordering::Relaxed);
+    if pid == 0 {
+        // don't kill the parent
+        return;
+    }
     unsafe { libc::kill(pid as i32, 9) };
 }
 async fn kill(
@@ -229,7 +251,7 @@ async fn list(
 #[derive(Debug, Serialize, Deserialize)]
 struct NewRequest {
     command: String,
-    uid: String,
+    user: String,
     name: String,
     dir: String,
 }
@@ -239,6 +261,26 @@ fn timestamp() -> u128 {
         .unwrap()
         .as_millis()
 }
+
+#[derive(Debug)]
+struct NoUserError;
+impl fmt::Display for NoUserError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "User doesn't exist!")
+    }
+}
+fn uid_from_username(username: &str) -> Result<u32, NoUserError> {
+    unsafe {
+        let cstr = CString::new(username).unwrap();
+        let ptr = getpwnam(cstr.as_ptr());
+        if ptr.is_null() {
+            return Err(NoUserError);
+        } else {
+            return Ok((*ptr).pw_uid);
+        }
+    }
+}
+
 async fn new(
     Extension(state): Extension<Arc<GState>>,
     Json(payload): Json<NewRequest>, // Extension(callbacks): Extension<Arc<RwLock<Callbacks>>>,
@@ -247,95 +289,121 @@ async fn new(
 ) -> impl IntoResponse {
     let id = get_id();
 
+    // to validate
+    uid_from_username(&payload.user).unwrap();
+
     let process = Process {
         name: payload.name,
         dir: payload.dir,
         command: payload.command,
+        user: payload.user,
         id,
         log: RwLock::new(VecDeque::new()),
         status: RwLock::new(Status::Running),
         pid: AtomicU32::new(0),
+        tx: Arc::new(RwLock::new(None)),
         timestamp: RwLock::new(timestamp()),
         autostart: true.into(),
     };
 
     let procref = Arc::new(process);
 
-    tokio::spawn(child_thread(procref.clone()));
+    spawn_child_thread(procref.clone()).await;
     state.proccess.0.write().await.insert(id, procref);
 
     save(state.clone()).await;
+    format!("{}", id)
 }
-async fn child_thread(process: Arc<Process>) {
-    let mut s = Command::new("/usr/bin/env")
-        .arg("script")
-        .arg("-q") // quiet
-        .arg("-c")
-        .arg(process.command.clone())
-        .arg("/dev/null")
-        .env("SHELL", "/bin/bash") // this is slightly rancid, will fix later
-        .env("TERM", "xterm") // remember on the other end we have an xterm capable emulator
-        .current_dir(process.dir.clone())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    process.pid.store(s.id(), Ordering::Relaxed);
+async fn spawn_child_thread(process: Arc<Process>) {
+    let (tx, _) = broadcast::channel(16);
+    *process.tx.0.write().await = Some(tx);
+    tokio::spawn(async move {
+        let mut s = Command::new("/usr/bin/env")
+            .arg("script")
+            .arg("-q") // quiet
+            .arg("-c")
+            .arg(process.command.clone())
+            .arg("/dev/null")
+            .env("SHELL", "/bin/bash") // this is slightly rancid, will fix later
+            .env("TERM", "xterm") // remember on the other end we have an xterm capable emulator
+            .current_dir(process.dir.clone())
+            .uid(uid_from_username(&process.user).unwrap())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let Ok(mut child) = s else {
+            let mut status = process.status.0.write().await;
+            *status = Status::Exited(-1);
+            *process.log.0.write().await  = VecDeque::from("Permission Denied while spawning child (did you use a privledged user?)".as_bytes().to_vec());
+            return;
+        };
+        process.pid.store(child.id(), Ordering::Relaxed);
 
-    let fd = s.stdout.as_mut().unwrap().as_raw_fd().clone();
-    let fderr = s.stderr.as_mut().unwrap().as_raw_fd().clone();
+        let fd = child.stdout.as_mut().unwrap().as_raw_fd().clone();
+        let fderr = child.stderr.as_mut().unwrap().as_raw_fd().clone();
 
-    let stdout = unsafe { File::from_raw_fd(fd) };
-    let stderr = unsafe { File::from_raw_fd(fderr) };
-    *process.timestamp.0.write().await = timestamp();
+        let stdout = unsafe { File::from_raw_fd(fd) };
+        let stderr = unsafe { File::from_raw_fd(fderr) };
+        *process.timestamp.0.write().await = timestamp();
 
-    // time out so we have a chance to respond to exit
-    let mut rdr = TimeoutReader::new(stdout, Duration::new(0, FD_TIMEOUT));
-    let mut rdrerr = TimeoutReader::new(stderr, Duration::new(0, FD_TIMEOUT));
-    loop {
-        let mut buf = [0; 1024];
-        let bytes = rdr.read(&mut buf).unwrap_or(0);
+        // time out so we have a chance to respond to exit
+        let mut rdr = TimeoutReader::new(stdout, Duration::new(0, FD_TIMEOUT));
+        let mut rdrerr = TimeoutReader::new(stderr, Duration::new(0, FD_TIMEOUT));
+        loop {
+            let mut buf = [0; 1024];
+            let bytes = rdr.read(&mut buf).unwrap_or(0);
 
-        if bytes > 0 {
-            let out = &buf[0..bytes];
-            let mut writer = process.log.0.write().await;
+            if bytes > 0 {
+                let out = &buf[0..bytes];
+                let mut writer = process.log.0.write().await;
 
-            for c in out.to_vec() {
-                writer.push_back(c);
-                if writer.len() > 4000 {
-                    writer.pop_front();
+                let tx = process.tx.clone().0.read().await.clone().unwrap();
+                if tx.receiver_count() > 0 {
+                    tx.send(out.to_vec()).unwrap();
+                }
+                for c in out.to_vec() {
+                    writer.push_back(c);
+                    if writer.len() > 4000 {
+                        writer.pop_front();
+                    }
                 }
             }
-        }
 
-        let bytes = rdrerr.read(&mut buf).unwrap_or(0);
-        if bytes > 0 {
-            let out = &buf[0..bytes];
-            let mut writer = process.log.0.write().await;
+            let bytes = rdrerr.read(&mut buf).unwrap_or(0);
+            if bytes > 0 {
+                let out = &buf[0..bytes];
+                let mut writer = process.log.0.write().await;
 
-            for c in out.to_vec() {
-                writer.push_back(c);
-                if writer.len() > 4000 {
-                    writer.pop_front();
+                let tx = process.tx.clone().0.read().await.clone().unwrap();
+                if tx.receiver_count() > 0 {
+                    tx.send(out.to_vec()).unwrap();
+                }
+
+                for c in out.to_vec() {
+                    writer.push_back(c);
+                    if writer.len() > 4000 {
+                        writer.pop_front();
+                    }
                 }
             }
-        }
 
-        match s.try_wait() {
-            Ok(Some(exit)) => {
-                let mut status = process.status.0.write().await;
-                *status = Status::Exited(exit.code().unwrap_or(-1));
-                *process.timestamp.0.write().await = timestamp();
+            match child.try_wait() {
+                Ok(Some(exit)) => {
+                    let mut status = process.status.0.write().await;
+                    *status = Status::Exited(exit.code().unwrap_or(-1));
+                    *process.timestamp.0.write().await = timestamp();
+                }
+                Ok(None) => (),
+                Err(e) => panic!("{}", e),
             }
-            Ok(None) => (),
-            Err(e) => panic!("{}", e),
-        }
 
-        // we're polling, give some time back to the scheduler
-        yield_now().await;
-    }
+            // we're polling, give some time back to the scheduler
+            yield_now().await;
+        }
+    });
 }
+// async fn child_thread(process: Arc<Process>) {}
 async fn save(state: Arc<GState>) {
     let procs = state.proccess.0.read().await;
 

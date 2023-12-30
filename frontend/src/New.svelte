@@ -7,7 +7,7 @@
   let name = "New Process";
 
   let command = "";
-  let uid = "1000";
+  let user = "root";
   let dir = "/";
 
   let d = createEventDispatcher();
@@ -19,7 +19,7 @@
       },
       body: JSON.stringify({
         command,
-        uid,
+        user,
         name,
         dir,
       }),
@@ -32,7 +32,7 @@
   <div class="flex flex-col space-y-3">
     <TextField name="name" bind:value={name} />
     <TextField name="command" bind:value={command} />
-    <TextField name="as UID" bind:value={uid} />
+    <TextField name="as user" bind:value={user} />
     <TextField name="working directory" bind:value={dir} />
 
     <Button type="tonal" on:click={create}>Create</Button>

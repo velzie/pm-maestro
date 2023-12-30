@@ -1,1 +1,1 @@
-{"processes":{"19":{"name":"New Process","dir":"/root","command":"echo 1","id":19,"status":"Running","timestamp":1703797101525,"autostart":true}},"counter":20}
+{"processes":{"41":{"name":"New Process","dir":"/","command":"echo 1","id":41,"user":"ce","status":"Running","timestamp":1703900119397,"autostart":true}},"counter":42}

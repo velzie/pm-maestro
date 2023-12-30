@@ -4,9 +4,13 @@
     Card,
     Dialog,
     FAB,
+    SnackbarAnim,
     StyleFromScheme,
     TextField,
   } from "m3-svelte";
+
+  import type { SnackbarIn } from "m3-svelte/package/containers/Snackbar.svelte";
+
   import Terminal from "./Terminal.svelte";
   import { onMount } from "svelte";
   import Icon from "@iconify/svelte";
@@ -14,30 +18,45 @@
   import type { Process } from "./types";
   import FocusCard from "./FocusCard.svelte";
   import New from "./New.svelte";
+  import { setsnackbar } from "./api";
 
   let shownew = false;
 
+  let snackbar: (data: SnackbarIn) => void;
+
   let command = "echo 1";
-  let uid = "1000";
+  let user = "root";
 
   export async function refresh() {
     let r = await fetch("/api/list");
     data = await r.json();
-    console.log(data);
+    if (!Object.values(data).find((p) => p.id == selectedprocess?.id)) {
+      selectedprocess = null;
+    }
   }
 
   let data: any;
   let selectedprocess: Process;
 
+  async function selectprocess(id) {
+    await refresh();
+    selectedprocess = Object.values(data).find((p) => p.id == id);
+  }
+
   onMount(async () => {
     refresh();
+    setsnackbar(snackbar);
   });
 </script>
 
 <main>
   {#key selectedprocess}
     {#if selectedprocess}
-      <FocusCard on:refresh={refresh} process={selectedprocess} />
+      <FocusCard
+        on:refresh={refresh}
+        process={selectedprocess}
+        select={selectprocess}
+      />
     {/if}
   {/key}
   <!-- <hr/> -->
@@ -45,7 +64,12 @@
   {#if data}
     <div class="grid m-4">
       {#each Object.values(data) as process}
-        <ProcessCard on:refresh={refresh} {process} bind:selectedprocess />
+        <ProcessCard
+          on:refresh={refresh}
+          select={selectprocess}
+          {process}
+          bind:selectedprocess
+        />
       {/each}
     </div>
   {/if}
@@ -60,6 +84,7 @@
   <div id="fab">
     <FAB icon="charm:plus" on:click={() => (shownew = true)} />
   </div>
+  <svelte:component this={SnackbarAnim} bind:show={snackbar} />
 </main>
 
 <StyleFromScheme

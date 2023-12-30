@@ -10,6 +10,7 @@ pub struct InternalRwLock<T: ?Sized> {
 
     c: UnsafeCell<T>,
 }
+#[derive(Debug)]
 pub struct RwLock<T>(pub tokio::sync::RwLock<T>);
 impl<T> RwLock<T> {
     pub fn new(t: T) -> RwLock<T> {

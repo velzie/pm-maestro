@@ -2,11 +2,12 @@
   import { Button, Card } from "m3-svelte";
   import type { Process } from "./types";
   import Icon from "@iconify/svelte";
-  import { deleteProcess, sendkillsignal, startprocess } from "./api";
+  import { deleteProcess, sendkillsignal, patchprocess } from "./api";
   import { createEventDispatcher } from "svelte";
 
   export let process: Process;
   export let selectedprocess: Process | null;
+  export let select: (id: number) => void;
   let d = createEventDispatcher();
 </script>
 
@@ -33,9 +34,16 @@
             <Icon icon="clarity:trash-solid" />
           </Button>
           <Button
-            on:click={() => {
-              startprocess(process.id);
-              d("refresh");
+            on:click={async () => {
+              let resp = await patchprocess(
+                process.id,
+                process.name,
+                process.command,
+                process.user,
+                process.dir
+              );
+              let id = await resp.json();
+              select(id);
             }}
             iconType="full"
             type="elevated"
