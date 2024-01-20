@@ -2,7 +2,7 @@
   import { Button, Card } from "m3-svelte";
   import type { Process } from "./types";
   import Icon from "@iconify/svelte";
-  import { deleteProcess, sendkillsignal, patchprocess } from "./api";
+  import { deleteProcess, sendkillsignal, restartProcess } from "./api";
   import { createEventDispatcher } from "svelte";
 
   export let process: Process;
@@ -12,7 +12,7 @@
 </script>
 
 <button on:click={() => (selectedprocess = process)}>
-  <Card type={process === selectedprocess ? "outlined" : "elevated"}>
+  <Card type={process?.id === selectedprocess?.id ? "outlined" : "elevated"}>
     <div class="flex flex-col items-start gap-y-5">
       <div class="text-xl">
         "{process.name}"
@@ -35,15 +35,7 @@
           </Button>
           <Button
             on:click={async () => {
-              let resp = await patchprocess(
-                process.id,
-                process.name,
-                process.command,
-                process.user,
-                process.dir
-              );
-              let id = await resp.json();
-              select(id);
+              restartProcess(process.id);
             }}
             iconType="full"
             type="elevated"

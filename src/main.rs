@@ -101,6 +101,8 @@ async fn main() {
     for process in savedstate.processes.0.read().await.values() {
         if process.autostart.load(Ordering::Relaxed) {
             spawn_child_thread(process.clone()).await;
+        } else if matches!(*process.status.0.read().await, Status::Running) {
+            *process.status.0.write().await = Status::Exited(-1);
         }
     }
 
@@ -115,6 +117,7 @@ async fn main() {
         .route("/api/:id", get(gets))
         .route("/api/:id", patch(patches))
         .route("/api/:id", delete(deletes))
+        .route("/api/:id/restart", post(restart))
         .route("/api/:id/kill", post(kill))
         .route("/api/:id/tail", get(websocket))
         .layer(Extension(Arc::new(state)));
@@ -190,6 +193,19 @@ async fn kill(
     ""
 }
 
+async fn restart(
+    Extension(state): Extension<Arc<GState>>,
+    Path(id): Path<usize>,
+) -> impl IntoResponse {
+    let procs = state.proccess.0.read().await;
+    let proc = procs.get(&id).unwrap();
+
+    *proc.status.0.write().await = Status::Running;
+    spawn_child_thread(proc.clone()).await;
+
+    ""
+}
+
 async fn deletes(
     Extension(state): Extension<Arc<GState>>,
     Path(id): Path<usize>,
@@ -254,6 +270,7 @@ struct NewRequest {
     user: String,
     name: String,
     dir: String,
+    autostart: bool,
 }
 fn timestamp() -> u128 {
     SystemTime::now()
@@ -303,7 +320,7 @@ async fn new(
         pid: AtomicU32::new(0),
         tx: Arc::new(RwLock::new(None)),
         timestamp: RwLock::new(timestamp()),
-        autostart: true.into(),
+        autostart: payload.autostart.into(),
     };
 
     let procref = Arc::new(process);
@@ -318,88 +335,129 @@ async fn spawn_child_thread(process: Arc<Process>) {
     let (tx, _) = broadcast::channel(16);
     *process.tx.0.write().await = Some(tx);
     tokio::spawn(async move {
-        let mut s = Command::new("/usr/bin/env")
-            .arg("script")
-            .arg("-q") // quiet
-            .arg("-c")
-            .arg(process.command.clone())
-            .arg("/dev/null")
-            .env("SHELL", "/bin/bash") // this is slightly rancid, will fix later
-            .env("TERM", "xterm") // remember on the other end we have an xterm capable emulator
-            .current_dir(process.dir.clone())
-            .uid(uid_from_username(&process.user).unwrap())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
-        let Ok(mut child) = s else {
-            let mut status = process.status.0.write().await;
-            *status = Status::Exited(-1);
-            *process.log.0.write().await  = VecDeque::from("Permission Denied while spawning child (did you use a privledged user?)".as_bytes().to_vec());
-            return;
-        };
-        process.pid.store(child.id(), Ordering::Relaxed);
-
-        let fd = child.stdout.as_mut().unwrap().as_raw_fd().clone();
-        let fderr = child.stderr.as_mut().unwrap().as_raw_fd().clone();
-
-        let stdout = unsafe { File::from_raw_fd(fd) };
-        let stderr = unsafe { File::from_raw_fd(fderr) };
-        *process.timestamp.0.write().await = timestamp();
-
-        // time out so we have a chance to respond to exit
-        let mut rdr = TimeoutReader::new(stdout, Duration::new(0, FD_TIMEOUT));
-        let mut rdrerr = TimeoutReader::new(stderr, Duration::new(0, FD_TIMEOUT));
         loop {
-            let mut buf = [0; 1024];
-            let bytes = rdr.read(&mut buf).unwrap_or(0);
+            let mut s = Command::new("/usr/bin/env")
+                .arg("script")
+                .arg("-q") // quiet
+                .arg("-c")
+                .arg(process.command.clone())
+                .arg("/dev/null")
+                .env("SHELL", "/bin/bash") // this is slightly rancid, will fix later
+                .env("TERM", "xterm") // remember on the other end we have an xterm capable emulator
+                .current_dir(process.dir.clone())
+                .uid(uid_from_username(&process.user).unwrap())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
+            let Ok(mut child) = s else {
+                let mut status = process.status.0.write().await;
+                *status = Status::Exited(-1);
+                *process.log.0.write().await = VecDeque::from(
+                    "Permission Denied while spawning child (did you use a privledged user?)"
+                        .as_bytes()
+                        .to_vec(),
+                );
+                return;
+            };
+            process.pid.store(child.id(), Ordering::Relaxed);
 
-            if bytes > 0 {
-                let out = &buf[0..bytes];
-                let mut writer = process.log.0.write().await;
+            let fd = child.stdout.as_mut().unwrap().as_raw_fd().clone();
+            let fderr = child.stderr.as_mut().unwrap().as_raw_fd().clone();
 
-                let tx = process.tx.clone().0.read().await.clone().unwrap();
-                if tx.receiver_count() > 0 {
-                    tx.send(out.to_vec()).unwrap();
-                }
-                for c in out.to_vec() {
-                    writer.push_back(c);
-                    if writer.len() > 4000 {
-                        writer.pop_front();
+            let stdout = unsafe { File::from_raw_fd(fd) };
+            let stderr = unsafe { File::from_raw_fd(fderr) };
+            *process.timestamp.0.write().await = timestamp();
+
+            // time out so we have a chance to respond to exit
+            let mut rdr = TimeoutReader::new(stdout, Duration::new(0, FD_TIMEOUT));
+            let mut rdrerr = TimeoutReader::new(stderr, Duration::new(0, FD_TIMEOUT));
+            loop {
+                let mut buf = [0; 1024];
+                let bytes = rdr.read(&mut buf).unwrap_or(0);
+
+                if bytes > 0 {
+                    let out = &buf[0..bytes];
+                    let mut writer = process.log.0.write().await;
+
+                    let tx = process.tx.clone().0.read().await.clone().unwrap();
+                    if tx.receiver_count() > 0 {
+                        tx.send(out.to_vec()).unwrap();
+                    }
+                    for c in out.to_vec() {
+                        writer.push_back(c);
+                        if writer.len() > 4000 {
+                            writer.pop_front();
+                        }
                     }
                 }
-            }
 
-            let bytes = rdrerr.read(&mut buf).unwrap_or(0);
-            if bytes > 0 {
-                let out = &buf[0..bytes];
-                let mut writer = process.log.0.write().await;
+                let bytes = rdrerr.read(&mut buf).unwrap_or(0);
+                if bytes > 0 {
+                    let out = &buf[0..bytes];
+                    let mut writer = process.log.0.write().await;
 
-                let tx = process.tx.clone().0.read().await.clone().unwrap();
-                if tx.receiver_count() > 0 {
-                    tx.send(out.to_vec()).unwrap();
-                }
+                    let tx = process.tx.clone().0.read().await.clone().unwrap();
+                    if tx.receiver_count() > 0 {
+                        tx.send(out.to_vec()).unwrap();
+                    }
 
-                for c in out.to_vec() {
-                    writer.push_back(c);
-                    if writer.len() > 4000 {
-                        writer.pop_front();
+                    for c in out.to_vec() {
+                        writer.push_back(c);
+                        if writer.len() > 4000 {
+                            writer.pop_front();
+                        }
                     }
                 }
-            }
 
-            match child.try_wait() {
-                Ok(Some(exit)) => {
-                    let mut status = process.status.0.write().await;
-                    *status = Status::Exited(exit.code().unwrap_or(-1));
-                    *process.timestamp.0.write().await = timestamp();
+                match child.try_wait() {
+                    Ok(Some(exit)) => {
+                        let mut status = process.status.0.write().await;
+                        *status = Status::Exited(exit.code().unwrap_or(-1));
+                        // *process.timestamp.0.write().await = timestamp();
+                        break;
+                    }
+                    Ok(None) => (),
+                    Err(e) => panic!("{}", e),
                 }
-                Ok(None) => (),
-                Err(e) => panic!("{}", e),
-            }
 
-            // we're polling, give some time back to the scheduler
+                // we're polling, give some time back to the scheduler
+                yield_now().await;
+            }
+            if !process.autostart.load(Ordering::Acquire) {
+                break;
+            }
             yield_now().await;
+            if timestamp() - process.timestamp.0.read().await.clone() < 30000 {
+                process.tx.clone().0.read().await.clone().unwrap().send(
+                    "[pm] !!!! exited within 30 seconds of starting, will not restart !!!!\n"
+                        .as_bytes()
+                        .to_vec(),
+                );
+                let mut writer = process.log.0.write().await;
+
+                for c in "[pm] !!!! exited within 30 seconds of starting, will not restart !!!!\n"
+                    .as_bytes()
+                    .to_vec()
+                {
+                    writer.push_back(c);
+                }
+                break;
+            } else {
+                process.tx.clone().0.read().await.clone().unwrap().send(
+                    "[pm] autostart was on, restarting process\n"
+                        .as_bytes()
+                        .to_vec(),
+                );
+                let mut writer = process.log.0.write().await;
+
+                for c in "[pm] autostart was on, restarting process\n"
+                    .as_bytes()
+                    .to_vec()
+                {
+                    writer.push_back(c);
+                }
+            }
         }
     });
 }

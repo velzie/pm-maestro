@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { Button, Card, FAB, TextField } from "m3-svelte";
+  import { Button, Card, FAB, TextField, Switch } from "m3-svelte";
   import type { Process } from "./types";
   import Icon from "@iconify/svelte";
   import { deleteProcess, sendkillsignal, patchprocess } from "./api";
+  import Slider from "./Slider.svelte";
   import Terminal from "./Terminal.svelte";
   import { createEventDispatcher } from "svelte";
 
@@ -13,12 +14,19 @@
   let io: any;
   let term: any;
 
-  let { name, command, user, dir } = process;
+  let { name, command, user, dir, autostart } = process;
 
   let d = createEventDispatcher();
 
   async function save() {
-    let resp = await patchprocess(process.id, name, command, user, dir);
+    let resp = await patchprocess(
+      process.id,
+      name,
+      command,
+      user,
+      dir,
+      autostart,
+    );
     let id = await resp.json();
     select(id);
   }
@@ -26,7 +34,7 @@
   let socket = new WebSocket(
     `${location.protocol === "http:" ? "ws:" : "wss:"}${location.hostname}${
       location.port ? `:${location.port}` : ""
-    }/api/${process.id}/tail`
+    }/api/${process.id}/tail`,
   );
   socket.addEventListener("message", async (event) => {
     let text = await event.data.text();
@@ -55,7 +63,7 @@
             <TextField name="command" bind:value={command} />
             <TextField name="In directory" bind:value={dir} />
             <TextField name="as user" bind:value={user} />
-
+            <Slider bind:checked={autostart}>Auto Restart</Slider>
             <div>
               <FAB on:click={save} icon="clarity:floppy-solid" />
             </div>

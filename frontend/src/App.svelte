@@ -45,6 +45,7 @@
 
   onMount(async () => {
     refresh();
+    setInterval(refresh, 2000);
     setsnackbar(snackbar);
   });
 </script>

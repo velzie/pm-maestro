@@ -1,1 +1,1 @@
-{"processes":{"41":{"name":"New Process","dir":"/","command":"echo 1","id":41,"user":"ce","status":"Running","timestamp":1703900119397,"autostart":true}},"counter":42}
+{"processes":{"53":{"name":"New Process","dir":"/","command":"echo 1; sleep 10","id":53,"user":"ce","status":{"Exited":0},"timestamp":1705781315074,"autostart":false},"54":{"name":"yessrde","dir":"/","command":"yes","id":54,"user":"ce","status":"Running","timestamp":1705781354443,"autostart":true}},"counter":55}

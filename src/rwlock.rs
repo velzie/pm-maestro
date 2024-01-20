@@ -17,6 +17,7 @@ impl<T> RwLock<T> {
         Self(tokio::sync::RwLock::new(t))
     }
     unsafe fn inner_unsafe(&self) -> *const InternalRwLock<T> {
+        // this is undefined behavior. i don't care
         &self.0 as *const tokio::sync::RwLock<T> as *const InternalRwLock<T>
     }
 }

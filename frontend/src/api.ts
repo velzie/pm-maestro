@@ -15,6 +15,12 @@ export async function sendkillsignal(id: number, signal: number) {
         },
         body: signal.toString(),
     });
+}
+
+export async function restartProcess(id: number, signal: number) {
+    await dfetch(`/api/${id}/restart`, {
+        method: "POST",
+    });
 
 }
 
@@ -36,7 +42,7 @@ export async function dfetch(url: string, opts: any) {
     return r;
 }
 
-export async function patchprocess(id: number, name: string, command: string, user: string, dir: string) {
+export async function patchprocess(id: number, name: string, command: string, user: string, dir: string, autostart: boolean) {
     return await dfetch(`/api/${id}`, {
         method: "PATCH",
         headers: {
@@ -47,6 +53,7 @@ export async function patchprocess(id: number, name: string, command: string, us
             command,
             dir,
             user,
+            autostart,
         }),
     });
 }
