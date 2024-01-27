@@ -2,3 +2,4 @@ target/
 target-trunk/
 /dist/
 /.log/
+cfg.json
