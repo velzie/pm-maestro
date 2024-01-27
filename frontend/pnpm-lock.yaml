@@ -5,6 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 dependencies:
+  '@iconify/svelte':
+    specifier: ^3.1.6
+    version: 3.1.6(svelte@4.2.1)
   autoprefixer:
     specifier: ^10.4.16
     version: 10.4.16(postcss@8.4.30)
@@ -265,8 +268,8 @@ packages:
       '@iconify/types': 2.0.0
     dev: false
 
-  /@iconify/svelte@3.1.4(svelte@4.2.1):
-    resolution: {integrity: sha512-YDwQlN46ka8KPRayDb7TivmkAPizfTXi6BSRNqa1IV0+byA907n8JcgQafA7FD//pW5XCuuAhVx6uRbKTo+CfA==}
+  /@iconify/svelte@3.1.6(svelte@4.2.1):
+    resolution: {integrity: sha512-yLSrlkOx5J6xXU5GDLPBV/MdVBVEZhd36onfqSbxQobp1XBoWQbMPLNZyCAmTKCPnmzXSowGy79agl8FQ3kj6A==}
     peerDependencies:
       svelte: '*'
     dependencies:
@@ -751,7 +754,7 @@ packages:
     resolution: {integrity: sha512-dqPBmKO4akl6A7vLJOtqS9hEy3YabZzsDBVoL3bRTOevhihjINn14SoLubB2PjPsDDHm5pF3KRW6mx+sPy6jNg==}
     dependencies:
       '@iconify-icons/ic': 1.2.13
-      '@iconify/svelte': 3.1.4(svelte@4.2.1)
+      '@iconify/svelte': 3.1.6(svelte@4.2.1)
       svelte: 4.2.1
     dev: false
 

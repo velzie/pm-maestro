@@ -7,7 +7,6 @@
 
   export let process: Process;
   export let selectedprocess: Process | null;
-  export let select: (id: number) => void;
   let d = createEventDispatcher();
 </script>
 
